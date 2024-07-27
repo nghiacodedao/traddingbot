@@ -14,7 +14,7 @@ let openOrder = null;
 const binance = new ccxt.binance({
     apiKey: process.env.BINANCE_API_KEY,
     secret: process.env.BINANCE_SECRET_KEY,
-    sandbox: true  // Sử dụng môi trường sandbox để test
+    sandbox: true
 });
 
 async function fetchPrices() {
@@ -183,14 +183,13 @@ async function runBotTest(duration) {
 
     while (Date.now() < endTime) {
         await main();
-        await new Promise(resolve => setTimeout(resolve, 60000)); // Đợi 1 phút trước khi chạy lại
+        await new Promise(resolve => setTimeout(resolve, 60000));
     }
 
     console.log('Bot test completed');
     await checkAccountBalance();
 }
 
-// Chạy các test và bot
 async function runAllTests() {
     console.log('Starting tests...');
     
