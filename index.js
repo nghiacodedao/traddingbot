@@ -8,17 +8,19 @@ const RISK_PER_TRADE = 0.01;
 const STOP_LOSS_PERCENTAGE = 0.01; 
 const TAKE_PROFIT_PERCENTAGE = 0.02; 
 
-let currentPosition = null;
-let openOrder = null;
+const TRADING_PAIRS = ['ETH/USDT', 'BTC/USDT'];
 
-const binance = new ccxt.binance({
-    apiKey: process.env.BINANCE_API_KEY,
-    secret: process.env.BINANCE_SECRET_KEY,
-    sandbox: true
+let currentPositions = {};
+let openOrders = {};
+
+const bitget = new ccxt.bitget({
+    apiKey: process.env.BITGET_API_KEY,
+    secret: process.env.BITGET_SECRET_KEY,
+    password: process.env.BITGET_PASSWORD,
 });
 
-async function fetchPrices() {
-    const prices = await binance.fetchOHLCV('ETH/USDT', '1h');
+async function fetchPrices(symbol) {
+    const prices = await bitget.fetchOHLCV(symbol, '1h');
     return prices.map(price => ({
         timestamp: moment(price[0]).format(),
         open: price[1],
@@ -51,42 +53,42 @@ function addIndicators(prices, indicators) {
     }));
 }
 
-async function placeOrder(side, amount, entryPrice) {
+async function placeOrder(symbol, side, amount, entryPrice) {
     try {
-        const order = await binance.createMarketOrder('ETH/USDT', side, amount);
-        console.log(`Order placed: ${side} ${amount} ETH/USDT`, order);
+        const order = await bitget.createMarketOrder(symbol, side, amount);
+        console.log(`Order placed: ${side} ${amount} ${symbol}`, order);
 
         const stopLossPrice = side === 'buy' ? entryPrice * (1 - STOP_LOSS_PERCENTAGE) : entryPrice * (1 + STOP_LOSS_PERCENTAGE);
         const takeProfitPrice = side === 'buy' ? entryPrice * (1 + TAKE_PROFIT_PERCENTAGE) : entryPrice * (1 - TAKE_PROFIT_PERCENTAGE);
 
         await Promise.all([
-            binance.createOrder('ETH/USDT', 'stop_loss_limit', side === 'buy' ? 'sell' : 'buy', amount, stopLossPrice, { stopPrice: stopLossPrice }),
-            binance.createOrder('ETH/USDT', 'take_profit_limit', side === 'buy' ? 'sell' : 'buy', amount, takeProfitPrice, { stopPrice: takeProfitPrice })
+            bitget.createOrder(symbol, 'stop', side === 'buy' ? 'sell' : 'buy', amount, stopLossPrice, { stopPrice: stopLossPrice }),
+            bitget.createOrder(symbol, 'take_profit', side === 'buy' ? 'sell' : 'buy', amount, takeProfitPrice, { stopPrice: takeProfitPrice })
         ]);
 
         console.log(`Stop Loss at ${stopLossPrice} and Take Profit at ${takeProfitPrice}`);
-        openOrder = { side, amount, entryPrice, stopLossPrice, takeProfitPrice };
+        openOrders[symbol] = { side, amount, entryPrice, stopLossPrice, takeProfitPrice };
     } catch (error) {
-        console.error(`Failed to place ${side} order:`, error);
+        console.error(`Failed to place ${side} order for ${symbol}:`, error);
     }
 }
 
-async function manageOpenOrders() {
+async function manageOpenOrders(symbol) {
     try {
-        const orders = await binance.fetchOpenOrders('ETH/USDT');
+        const orders = await bitget.fetchOpenOrders(symbol);
         for (const order of orders) {
             const { price, side, id } = order;
-            if (openOrder && ((side === 'buy' && (price <= openOrder.stopLossPrice || price >= openOrder.takeProfitPrice)) ||
-                (side === 'sell' && (price >= openOrder.stopLossPrice || price <= openOrder.takeProfitPrice)))) {
-                console.log(`Order ${side} triggered at ${price}`);
-                await binance.cancelOrder(id, 'ETH/USDT');
-                console.log(`Order ${side} canceled at ${price}`);
-                currentPosition = null;
-                openOrder = null;
+            if (openOrders[symbol] && ((side === 'buy' && (price <= openOrders[symbol].stopLossPrice || price >= openOrders[symbol].takeProfitPrice)) ||
+                (side === 'sell' && (price >= openOrders[symbol].stopLossPrice || price <= openOrders[symbol].takeProfitPrice)))) {
+                console.log(`Order ${side} triggered at ${price} for ${symbol}`);
+                await bitget.cancelOrder(id, symbol);
+                console.log(`Order ${side} canceled at ${price} for ${symbol}`);
+                currentPositions[symbol] = null;
+                openOrders[symbol] = null;
             }
         }
     } catch (error) {
-        console.error('Failed to manage open orders:', error);
+        console.error(`Failed to manage open orders for ${symbol}:`, error);
     }
 }
 
@@ -98,19 +100,19 @@ function isBearishEngulfing(prev, curr) {
     return prev.close > prev.open && curr.close < curr.open && curr.close < prev.open && curr.open > prev.close;
 }
 
-async function main() {
+async function analyzePair(symbol) {
     try {
-        console.log('Fetching prices...');
-        const prices = await fetchPrices();
-        console.log(`Fetched ${prices.length} price points`);
+        console.log(`Fetching prices for ${symbol}...`);
+        const prices = await fetchPrices(symbol);
+        console.log(`Fetched ${prices.length} price points for ${symbol}`);
 
-        console.log('Calculating indicators...');
+        console.log(`Calculating indicators for ${symbol}...`);
         const indicators = calculateIndicators(prices);
-        console.log('Indicators calculated');
+        console.log(`Indicators calculated for ${symbol}`);
 
-        console.log('Adding indicators to prices...');
+        console.log(`Adding indicators to prices for ${symbol}...`);
         const pricesWithIndicators = addIndicators(prices, indicators);
-        console.log('Indicators added to prices');
+        console.log(`Indicators added to prices for ${symbol}`);
 
         for (let i = 1; i < pricesWithIndicators.length; i++) {
             const prev = pricesWithIndicators[i - 1];
@@ -118,90 +120,63 @@ async function main() {
             const tradeAmount = ACCOUNT_BALANCE * RISK_PER_TRADE;
             const amountToTrade = tradeAmount / curr.close;
 
-            console.log(`Analyzing candlestick ${i}: ${curr.timestamp}`);
+            console.log(`Analyzing candlestick ${i}: ${curr.timestamp} for ${symbol}`);
 
-            if (isBullishEngulfing(prev, curr) && curr.close > curr.ema34 && curr.rsi14 < 70 && currentPosition !== 'buy') {
-                console.log(`BUY Signal at ${curr.timestamp}`);
-                await placeOrder('buy', amountToTrade, curr.close);
-                currentPosition = 'buy';
-            } else if (isBearishEngulfing(prev, curr) && curr.close < curr.ema34 && curr.rsi14 > 30 && currentPosition !== 'sell') {
-                console.log(`SELL Signal at ${curr.timestamp}`);
-                await placeOrder('sell', amountToTrade, curr.close);
-                currentPosition = 'sell';
+            if (isBullishEngulfing(prev, curr) && curr.close > curr.ema34 && curr.rsi14 < 70 && currentPositions[symbol] !== 'buy') {
+                console.log(`BUY Signal at ${curr.timestamp} for ${symbol}`);
+                await placeOrder(symbol, 'buy', amountToTrade, curr.close);
+                currentPositions[symbol] = 'buy';
+            } else if (isBearishEngulfing(prev, curr) && curr.close < curr.ema34 && curr.rsi14 > 30 && currentPositions[symbol] !== 'sell') {
+                console.log(`SELL Signal at ${curr.timestamp} for ${symbol}`);
+                await placeOrder(symbol, 'sell', amountToTrade, curr.close);
+                currentPositions[symbol] = 'sell';
             }
 
             if (curr.ema50 && prev.ema50) {
-                if (prev.ema50 < prev.close && curr.ema50 > curr.close && curr.rsi14 < 70 && currentPosition !== 'buy') {
-                    console.log(`BUY Signal at ${curr.timestamp} (EMA50 Cross)`);
-                    await placeOrder('buy', amountToTrade, curr.close);
-                    currentPosition = 'buy';
-                } else if (prev.ema50 > prev.close && curr.ema50 < curr.close && curr.rsi14 > 30 && currentPosition !== 'sell') {
-                    console.log(`SELL Signal at ${curr.timestamp} (EMA50 Cross)`);
-                    await placeOrder('sell', amountToTrade, curr.close);
-                    currentPosition = 'sell';
+                if (prev.ema50 < prev.close && curr.ema50 > curr.close && curr.rsi14 < 70 && currentPositions[symbol] !== 'buy') {
+                    console.log(`BUY Signal at ${curr.timestamp} (EMA50 Cross) for ${symbol}`);
+                    await placeOrder(symbol, 'buy', amountToTrade, curr.close);
+                    currentPositions[symbol] = 'buy';
+                } else if (prev.ema50 > prev.close && curr.ema50 < curr.close && curr.rsi14 > 30 && currentPositions[symbol] !== 'sell') {
+                    console.log(`SELL Signal at ${curr.timestamp} (EMA50 Cross) for ${symbol}`);
+                    await placeOrder(symbol, 'sell', amountToTrade, curr.close);
+                    currentPositions[symbol] = 'sell';
                 }
             }
         }
 
-        if (openOrder) {
-            console.log('Managing open orders...');
-            await manageOpenOrders();
+        if (openOrders[symbol]) {
+            console.log(`Managing open orders for ${symbol}...`);
+            await manageOpenOrders(symbol);
         }
     } catch (error) {
-        console.error('Error in main function:', error);
+        console.error(`Error in analyzePair function for ${symbol}:`, error);
     }
 }
 
-function testEngulfingPatterns() {
-    const bullishTest = {
-        prev: { open: 100, close: 98 },
-        curr: { open: 97, close: 101 }
-    };
-    console.assert(isBullishEngulfing(bullishTest.prev, bullishTest.curr), 'Bullish engulfing test failed');
-
-    const bearishTest = {
-        prev: { open: 100, close: 102 },
-        curr: { open: 103, close: 99 }
-    };
-    console.assert(isBearishEngulfing(bearishTest.prev, bearishTest.curr), 'Bearish engulfing test failed');
-
-    console.log('Engulfing pattern tests completed');
+async function main() {
+    for (const symbol of TRADING_PAIRS) {
+        await analyzePair(symbol);
+    }
 }
 
 async function checkAccountBalance() {
     try {
-        const balance = await binance.fetchBalance();
+        const balance = await bitget.fetchBalance();
         console.log('Account balance:', balance.total);
     } catch (error) {
         console.error('Error fetching account balance:', error);
     }
 }
 
-async function runBotTest(duration) {
-    const startTime = Date.now();
-    const endTime = startTime + duration;
-
-    while (Date.now() < endTime) {
+async function runBot() {
+    while (true) {
         await main();
-        await new Promise(resolve => setTimeout(resolve, 60000));
+        await new Promise(resolve => setTimeout(resolve, 60000)); // Đợi 1 phút trước khi chạy lại
     }
-
-    console.log('Bot test completed');
-    await checkAccountBalance();
 }
 
-async function runAllTests() {
-    console.log('Starting tests...');
-    
-    testEngulfingPatterns();
-    
-    console.log('Checking initial account balance...');
-    await checkAccountBalance();
-    
-    console.log('Running bot test for 10 minutes...');
-    await runBotTest(600000);
-    
-    console.log('All tests completed.');
-}
-
-runAllTests();
+console.log('Starting bot on live account...');
+checkAccountBalance().then(() => {
+    runBot();
+});
