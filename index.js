@@ -12,9 +12,9 @@ let currentPosition = null;
 let openOrder = null;
 
 const binance = new ccxt.binance({
-    //nhớ điền api của sàn bạn cần
-    apiKey: process.env.,
-    secret: process.env.
+    apiKey: process.env.BINANCE_API_KEY,
+    secret: process.env.BINANCE_SECRET_KEY,
+    sandbox: true  // Sử dụng môi trường sandbox để test
 });
 
 async function fetchPrices() {
@@ -100,15 +100,25 @@ function isBearishEngulfing(prev, curr) {
 
 async function main() {
     try {
+        console.log('Fetching prices...');
         const prices = await fetchPrices();
+        console.log(`Fetched ${prices.length} price points`);
+
+        console.log('Calculating indicators...');
         const indicators = calculateIndicators(prices);
+        console.log('Indicators calculated');
+
+        console.log('Adding indicators to prices...');
         const pricesWithIndicators = addIndicators(prices, indicators);
+        console.log('Indicators added to prices');
 
         for (let i = 1; i < pricesWithIndicators.length; i++) {
             const prev = pricesWithIndicators[i - 1];
             const curr = pricesWithIndicators[i];
             const tradeAmount = ACCOUNT_BALANCE * RISK_PER_TRADE;
             const amountToTrade = tradeAmount / curr.close;
+
+            console.log(`Analyzing candlestick ${i}: ${curr.timestamp}`);
 
             if (isBullishEngulfing(prev, curr) && curr.close > curr.ema34 && curr.rsi14 < 70 && currentPosition !== 'buy') {
                 console.log(`BUY Signal at ${curr.timestamp}`);
@@ -133,10 +143,66 @@ async function main() {
             }
         }
 
-        if (openOrder) await manageOpenOrders();
+        if (openOrder) {
+            console.log('Managing open orders...');
+            await manageOpenOrders();
+        }
     } catch (error) {
-        console.error('Error:', error);
+        console.error('Error in main function:', error);
     }
 }
 
-main();
+function testEngulfingPatterns() {
+    const bullishTest = {
+        prev: { open: 100, close: 98 },
+        curr: { open: 97, close: 101 }
+    };
+    console.assert(isBullishEngulfing(bullishTest.prev, bullishTest.curr), 'Bullish engulfing test failed');
+
+    const bearishTest = {
+        prev: { open: 100, close: 102 },
+        curr: { open: 103, close: 99 }
+    };
+    console.assert(isBearishEngulfing(bearishTest.prev, bearishTest.curr), 'Bearish engulfing test failed');
+
+    console.log('Engulfing pattern tests completed');
+}
+
+async function checkAccountBalance() {
+    try {
+        const balance = await binance.fetchBalance();
+        console.log('Account balance:', balance.total);
+    } catch (error) {
+        console.error('Error fetching account balance:', error);
+    }
+}
+
+async function runBotTest(duration) {
+    const startTime = Date.now();
+    const endTime = startTime + duration;
+
+    while (Date.now() < endTime) {
+        await main();
+        await new Promise(resolve => setTimeout(resolve, 60000)); // Đợi 1 phút trước khi chạy lại
+    }
+
+    console.log('Bot test completed');
+    await checkAccountBalance();
+}
+
+// Chạy các test và bot
+async function runAllTests() {
+    console.log('Starting tests...');
+    
+    testEngulfingPatterns();
+    
+    console.log('Checking initial account balance...');
+    await checkAccountBalance();
+    
+    console.log('Running bot test for 10 minutes...');
+    await runBotTest(600000);
+    
+    console.log('All tests completed.');
+}
+
+runAllTests();
