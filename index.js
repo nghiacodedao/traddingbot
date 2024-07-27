@@ -12,8 +12,8 @@ let currentPosition = null;
 let openOrder = null;
 
 const binance = new ccxt.binance({
-    apiKey: process.env.WTQndUVWkj5XKaT2UTDbsfsLvf2596PomcpzvaqlmDUZRg5XsvHujuLMEwM8OWaN,
-    secret: process.env.gqKqRbhHkYsqM9PD8LXENzlsFGnL6t51ZxHBCeCXVe75VOuxW5bDblo5Mvr9PMcd
+    apiKey: process.env.,
+    secret: process.env.
 });
 
 async function fetchPrices() {
