@@ -12,6 +12,7 @@ let currentPosition = null;
 let openOrder = null;
 
 const binance = new ccxt.binance({
+    //nhớ điền api của sàn bạn cần
     apiKey: process.env.,
     secret: process.env.
 });
